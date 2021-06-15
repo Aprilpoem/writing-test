@@ -21,7 +21,9 @@ In this test,  I use c++ to implement convolution , relu and pooling functions.
 
 
 
-## Laptop CPU Specs
+## Prerequisity
+
+### Laptop CPU Specs
 
 Using command line `sysctl -a | grep cpu` to check those information below.
 
@@ -35,13 +37,24 @@ Similarly, for a single core, this number is 44.8 GFLOPs.
 
 
 
-## Input Data 
+### Running
 
-Because this work now only inlcude forward pass part,  we can just input some test data into those functions ( conv2d, relu, pooling ) to compute performance ( flops ).  Thus, The test data don't need labels, which be generated randomly.
+```
+g++ main.cpp convolution.cpp data.cpp relu.cpp pooling.cpp -fopenmp
+./a.out
+```
 
-Assume the input data shape is $[N,C_{in},H_{in},W_{in}]$. The multi-dimentional array is a little hard to construct using c++, as arrays are physically stored in a linear, one-dimentional computer memory, I just using one-dimentional array to store data.
+Make sure `openMP` installed, then use this two command lines to run this simple pipeline.
 
-**Data Structure**
+
+
+### Input Data 
+
+Because this work now only inlcude forward pass part,  we can just input some test data into those functions ( conv2d, relu, pooling ) to compute performance ( flops ).  Thus, The test data temporarily don't need labels, which can be generated randomly.
+
+Assume the input data shape is $[N,C_{in},H_{in},W_{in}]$. The multi-dimentional array is a little hard to construct using c++, as arrays are physically stored in a linear, one-dimentional computer memory, I just using one-dimentional array to store data. So for input data $[N,C_{in},H_{in},W_{in}]$, the length of one-dimentional array is $N*C_{in}*H_{in}*W_{in}$. Similarly，the kernel data whose size is $[C_{out},C_{in},KH,KW]$ has length equal to $C_{out}*C_{in}*KH*KW$ . The output data has shape $[N,C_{out},H_{out},W_{out}]$, length $[N*C_{out}*H_{out}*W_{out}]$.
+
+**Data Structure **
 
 ```c++
 class Data{
@@ -60,6 +73,26 @@ public:
     void Init(float fillValue = 0);
     void print();
 };
+```
+
+### Measure the Performance
+
+Here，we use flops to measure the performance of functions like convolution, relu and pooling.  Because the number of operations  inside the whole program is hard to calculate，here use the number of operations of matrix multiplication. Addtionally, we use `omp_get_wtime()` to measure the system time, which return the number of seconds. The code of computing flops are showed as follows:
+
+```c++
+#define LOOP_COUNT 5
+double starttime = omp_get_wtime();
+for( int i=0; i< LOOP_COUNT; i++){
+  // funtion: conv,relu,pooling
+  ...
+}
+double endtime = omp_get_wtime();
+// average time 
+double time_avg = (endtime - starttime) / LOOP_COUNT;
+// compute the number of operations
+double gflop = (2.0 * N * C_in * C_out * H_out * W_out * KH * KW)*1e-9;
+// compute flops
+double gflops = gflop / time_avg;
 ```
 
 
@@ -169,6 +202,10 @@ for(i = 0; i < M; ++i){
 - **SIMD**
 
 Single Instruction Multiple Data, or SIMD, which can be used to do the same operation( add, multiply, etc .) on multiple values simultaneously. A single-precision floating-point number occupies 4 bytes, the laptop I used support AVX2, so it could operate four floating-point numbers at the same time ( 128-bit vector containing **4** `floats`). 
+
+
+
+
 
 ```c++
 #include <x86intrin.h>
