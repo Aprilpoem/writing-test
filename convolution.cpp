@@ -5,12 +5,15 @@
 #include <iostream>
 #include <ctime>
 #include <cmath>
-#include "data.h"
 #include <omp.h>
 //#include <x86intrin.h>
+#include <xmmintrin.h>
 #include <immintrin.h>
+//#include <avxintrin.h>
 using namespace std;
-
+#define bs_i 256// l2 cache 256kb
+#define bs_k 128
+#define BlockSize 64
 
 void print(float* data, int row, int col){
     for (int i = 0; i < row * col; i++){
@@ -59,7 +62,7 @@ void gemm_nn_ikj(int M, int N, int K, float ALPHA,
              float *C, int ldc)
 {
     int i,j,k;
-    #pragma omp parallel for private(k,j) schedule(dynamic)
+    //#pragma omp parallel for
     for(i = 0; i < M; ++i){
         for(k = 0; k < K; ++k){
             register float A_PART = ALPHA*A[i*lda+k];
@@ -70,13 +73,47 @@ void gemm_nn_ikj(int M, int N, int K, float ALPHA,
         }
     }
 }
+
+void blocking(int M, int N, int K,
+           float *A, int lda,
+           float *B, int ldb,
+           float *C, int ldc) {
+#pragma omp parallel for
+    for (int bi = 0; bi < M; bi++) {
+        for (int bk = 0; bk < K; bk++) {
+            __m256 a8 = _mm256_broadcast_ss(&A[bi * lda + bk]);
+            for (int bj = 0; bj < N; bj += 8) {
+                // Loads 8 SP FP values. The address must be 32-byte-aligned.
+                __m256 b8 = _mm256_loadu_ps(&B[bk * ldb + bj]);
+                __m256 c8 = _mm256_loadu_ps(&C[bi * ldc] + bj);
+                c8 = _mm256_fmadd_ps(a8, b8, c8);
+                // Store 8 values, address aligned
+                _mm256_storeu_ps(&C[bi * ldc + bj], c8);
+            }
+        }
+    }
+}
+void gemm_nn_ikj_blocking(int M, int N, int K, float ALPHA,
+                 float *A, int lda,
+                 float *B, int ldb,
+                 float *C, int ldc){
+    int i,k;
+#pragma omp parallel for
+    for(i = 0; i < M; i+=bs_i){
+        for(k = 0; k < K; k+=bs_k){
+                // do block
+                blocking(min(M-i,bs_i),N,min(K-k,bs_k),&A[lda*i+k],lda,&B[ldb*k],ldb,&C[ldc*i],ldc);
+        }
+    }
+}
+
 void gemm_nn_ijk(int M, int N, int K, float ALPHA,
                  float *A, int lda,
                  float *B, int ldb,
                  float *C, int ldc)
 {
     int i,j,k;
-#pragma omp parallel for private(j,k) schedule(dynamic)
+//#pragma omp parallel for private(j,k) schedule(dynamic)
     for(i = 0; i < M; ++i){
         for(j = 0; j < N; ++j){
             for(k = 0; k < K; ++k){
@@ -86,6 +123,28 @@ void gemm_nn_ijk(int M, int N, int K, float ALPHA,
     }
 }
 
+void gemm_nn_ijk_blocking(int M, int N, int K, float ALPHA,
+                 float *A, int lda,
+                 float *B, int ldb,
+                 float *C, int ldc)
+{
+    int i,j,k;
+//#pragma omp parallel for private(j,k) schedule(dynamic)
+    for(j = 0; j < N; j+=BlockSize){
+            for( k = 0; k < K; k+=BlockSize) {
+                for( i = 0; i < M; i++){
+                    for (int bj = j; bj < min(N, j + BlockSize); bj++) {
+                        for (int bk = k; bk < min(K, k + BlockSize); bk++) {
+                            C[i * ldc + bj] += A[i * lda + bk] * B[bk * ldb + bj];
+                        }
+                    }
+                }
+
+            }
+        }
+
+}
+
 
 void gemm_nn_ikj_simd(int M, int N, int K, float ALPHA,
                  float *A, int lda,
@@ -93,16 +152,18 @@ void gemm_nn_ikj_simd(int M, int N, int K, float ALPHA,
                  float *C, int ldc)
 {
     int i,j,k;
-#pragma omp parallel for private(k,j) schedule(dynamic)
+#pragma omp parallel for private(i,k,j) schedule(dynamic)
     for(i = 0; i < M; i++){
         for(k = 0; k < K; k++){
-            //register float A_PART = ALPHA*A[i*lda+k];
-            __m128 a4 = _mm_set1_ps(A[i*lda+k]);
-            for(j = 0; j < N; j+=4){
-                __m128 b4 = _mm_load_ps(&B[k*ldb+j]);
-                __m128 c4 = _mm_load_ps(&C[i*ldc]+j);
-                c4 = _mm_add_ps(_mm_mul_ps(a4,b4),c4);
-                _mm_store_ps(&C[i*ldc+j],c4);
+           //Set all four words with the same value
+            __m256 a4 = _mm256_set1_ps(A[i * lda + k]);
+            for(j = 0; j < N; j+=8){
+                // Loads 8 SP FP values. The address must be 32-byte-aligned.
+                __m256 b4 = _mm256_loadu_ps(&B[k*ldb+j]);
+                __m256 c4 = _mm256_loadu_ps(&C[i*ldc]+j);
+                c4 = _mm256_fmadd_ps(a4,b4,c4);
+                // Store 8 values, address aligned
+                _mm256_storeu_ps(&C[i*ldc+j],c4);
             }
         }
     }
@@ -114,20 +175,23 @@ void gemm_relu(int M, int N, int K, float ALPHA,
                       float *B, int ldb,
                       float *C, int ldc) {
     int i, j, k;
-#pragma omp parallel for private(k, j) schedule(dynamic)
+#pragma omp parallel for
     for (i = 0; i < M; i++) {
         for (k = 0; k < K; k++) {
-            //register float A_PART = ALPHA*A[i*lda+k];
-            __m128 a4 = _mm_set1_ps(A[i * lda + k]);
-            for (j = 0; j < N; j += 4) {
-                __m128 b4 = _mm_load_ps(&B[k * ldb + j]);
-                __m128 c4 = _mm_load_ps(&C[i * ldc] + j);
-                c4 = _mm_add_ps(_mm_mul_ps(a4, b4), c4);
-                _mm_store_ps(&C[i * ldc + j], c4);
+            __m256 a4 = _mm256_set1_ps(A[i * lda + k]);
+            for(j = 0; j < N; j+=8){
+                // Loads 8 SP FP values. The address must be 32-byte-aligned.
+                __m256 b4 = _mm256_load_ps(&B[k*ldb+j]);
+                __m256 c4 = _mm256_load_ps(&C[i*ldc]+j);
+                c4 = _mm256_fmadd_ps(a4,b4,c4);
+                // Store 8 values, address aligned
+                _mm256_store_ps(&C[i*ldc+j],c4);
             }
         }
-        for (j = 0; j < N; ++j) {
-            C[i * ldc + j] = (C[i * ldc + j] > 0) ? C[i * ldc + j] : 0;
+        for (j = 0; j < N; j+=8) {
+            __m256 c8 = _mm256_load_ps(&C[i*ldc]+j);
+            c8 = _mm256_max_ps(c8, _mm256_set1_ps(0.0));
+            _mm256_storeu_ps(&C[i*ldc+j],c8);
         }
     }
 }
@@ -176,15 +240,32 @@ Data ConvLayer::naiveConv(Data &input){
     return output;
 }
 
-
-void ConvLayer::optimizedConv(float **input,float ** output,int batch,int m, int n, int k){
-//#pragma omp parallel for schedule(dynamic)
+void ConvLayer::optimizedConv1(float *input,float *output,int batch,int m, int n, int k) const {
+#pragma omp parallel for schedule(dynamic)
+    for (int batch_id = 0; batch_id < batch; batch_id++) {
+        // gemm to do convolution
+        // kernel: m x k
+        // input: k x n
+        // output: m x n
+        //cout << m << ' ' << n << ' ' << k << endl;
+        gemm_nn_ikj_simd(m, n, k, 1.0,
+                          kernel.data, k,
+                          &input[batch_id * k * n], n,
+                          &output[batch_id * m * n], n);
+    }
+}
+void ConvLayer::optimizedConv(float *input,float *output,int batch,int m, int n, int k) const{
+#pragma omp parallel for schedule(dynamic)
     for(int batch_id = 0; batch_id < batch; batch_id++){
         // gemm to do convolution
-        gemm_nn_ijk(m,n,k,1.0,
+        // kernel: m x k
+        // input: k x n
+        // output: m x n
+        //cout << m << ' ' << n << ' ' << k << endl;
+        gemm_nn_ikj_blocking(m,n,k,1.0,
                 kernel.data,k,
-                input[batch_id],n,
-                output[batch_id],n);
+                &input[batch_id*k*n],n,
+                &output[batch_id*m*n],n);
     }
 
 //    for(int i=0;i< batch;i++){
