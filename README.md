@@ -1,3 +1,217 @@
+# Revised part
+To optimize gemm, I add two parts: 1. In Simd, I use `_mm256xx` to replace `_mm128xxx`, so gemm runs faster. 1. Besides, I add Block to reduce cache misses. And I apply simd to `maxpooling` and fused `conv+relu`. Some details described as following:
+
+- Beacuse avx2 support 256 Bytes data, so in code, we can get `8 floats` as vector.
+
+  - The address is not 32-byte-aligned.
+
+    Use `_mm256_loadu_ps` and `_mm256_storeu_ps` to load and store data whose address are not 32-byte-aligned.
+
+    ```c++
+    for(i = 0; i < M; i++){
+            for(k = 0; k < K; k++){
+               //Set all four words with the same value
+                __m256 a4 = _mm256_set1_ps(A[i * lda + k]);
+                for(j = 0; j < N; j+=8){
+                    __m256 b4 = _mm256_loadu_ps(&B[k*ldb+j]);
+                    __m256 c4 = _mm256_loadu_ps(&C[i*ldc]+j);
+                    c4 = _mm256_fmadd_ps(a4,b4,c4);
+                    // store
+                    _mm256_storeu_ps(&C[i*ldc+j],c4);
+                }
+            }
+        }
+    ```
+
+  - The address is  32-byte-aligned.
+
+    Use `_mm_malloc(size_t __size, size_t __align)` to allocate memory and `_mm_free` to free it.
+
+    ```c++
+    #define alignedValue 32
+    float *input_data = (float *)_mm_malloc(batch * input_size * sizeof(float), alignedValue);
+    float *output_data = (float *)_mm_malloc(batch * output_size * sizeof(float),alignedValue);
+    ```
+
+    Because when we use `_mm256_load_ps(float *addr)`, the address must be 32-byte-aligned. As we load 8 floats at once ( 8 * sizeof(float) = 32 ), if start address is aligned,  then interest loop `j` can keep address aligned. So we need to make sure the row address ( start address of `j` loop )of matrix should be 32-byte-aligned. The number of columns of Matix is a multiple of `8`. ( (columns * sizeof(floats)) % 32 == 0)
+
+    ```c++
+    int aligned_offset(int size, int alignment, int unit){
+        // unit is 4byte
+        alignment = alignment / unit;
+        int offset = size % alignment;
+        offset = (offset == 0) ? 0 : alignment - offset;
+        return offset;
+    }
+    int offset = aligned_offset(n,alignedValue,sizeof(float));
+    int newn = n + offset;
+    int input_size = k * newn;
+    int output_size = m * newn;
+    float *input_data = (float *)_mm_malloc(batch * input_size * sizeof(float), alignedValue);
+    float *output_data = (float *)_mm_malloc(batch * output_size * sizeof(float),alignedValue);
+    ```
+
+  - The performace of aligned address is higher , the Gflops is `7.51`, while the Gflops is `7.18` when not align the address of data.
+
+    
+
+- Use blocking to accelerate computation.
+
+The goal of using `blocking` is to maximize data reuse before it is replaced in cache. 
+
+Different level cache sizes of my laptop are shown below:
+
+```c++
+hw.cachelinesize: 64 = 64 B
+hw.l1icachesize: 32768 = 32 KB
+hw.l1dcachesize: 32768 = 32 KB
+hw.l2cachesize: 262144 =  256 KB
+hw.l3cachesize: 6291456 = 6 GB
+```
+
+We choose `bs_i x bs_k` sub-matrix from A, and `bs_k x N` from matrix B to get sub-matrix C, which size is `bs_i x N`. Note that `[bs_i x  N]` sub-matrix C not finished, it should computed K/bk loops. 
+
+```c++
+#define bs_i 256
+#define bs_k 256 //l2 cache 256kb, it could load 256x256 floats
+void blocking(int M, int N, int K,
+           float *A, int lda,
+           float *B, int ldb,
+           float *C, int ldc) {
+#pragma omp parallel for
+    for (int bi = 0; bi < M; bi++) {
+        for (int bk = 0; bk < K; bk++) {
+            __m256 a8 = _mm256_broadcast_ss(&A[bi * lda + bk]);
+            for (int bj = 0; bj < N; bj += 8) {
+                __m256 b8 = _mm256_loadu_ps(&B[bk * ldb + bj]);
+                __m256 c8 = _mm256_loadu_ps(&C[bi * ldc] + bj);
+                c8 = _mm256_fmadd_ps(a8, b8, c8);
+                _mm256_storeu_ps(&C[bi * ldc + bj], c8);
+            }
+        }
+    }
+}
+void gemm_nn_ikj_blocking(int M, int N, int K, float ALPHA,
+                 float *A, int lda,
+                 float *B, int ldb,
+                 float *C, int ldc){
+    int i,k;
+#pragma omp parallel for
+    for(i = 0; i < M; i+=bs_i){
+        for(k = 0; k < K; k+=bs_k){
+                // do block
+                blocking(min(M-i,bs_i),N,min(K-k,bs_k),&A[lda*i+k],lda,&B[ldb*k],ldb,&C[ldc*i],ldc);
+        }
+    }
+}
+```
+
+Simply use N rows and N columns matrix multiplation to test blocking algorithm. 
+
+```c++
+void test_block(){
+    int n = 1024;
+    int N = n * n;
+    double gflop = 1e-9*(2.0*n*n*n);
+    float *A =  new float [N];
+    fill(A, A+N, 0.5);
+    float *B = new float[N];
+    fill(B, B+N, 2.5);
+    float *C = new float [N];
+    fill(C, C+N, 0.0);
+    double starttime = omp_get_wtime();
+    gemm_nn_ikj_simd(n,n,n,1.0,A,n,B,n,C,n);
+    double endtime = omp_get_wtime();
+    double gflops = gflop/(endtime-starttime);
+    printf("GFlop/sec   : %.5f  \n", gflops);
+
+    fill(C, C+N, 0.0);
+    starttime = omp_get_wtime();
+    gemm_nn_ikj_blocking(n,n,n,1.0,A,n,B,n,C,n);
+    endtime = omp_get_wtime();
+    gflops = gflop/(endtime-starttime);
+    printf("GFlop/sec   : %.5f  \n", gflops);
+}
+```
+
+|                        | n=50 | n=100 | n=500 | n=1024 |
+| ---------------------- | ---- | ----- | ----- | ------ |
+| `gemm_nn_ikj_simd`     | 0.6  | 2.78  | 7.7   | 9.85   |
+| `gemm_nn_ikj_blocking` | 1.15 | 1.38  | 6.0   | 26.16  |
+
+From this table we can find the performance is related to the size of matrix. If matrix could be load cache entirly,  then the blocking is not working, even it could slow the speed because of additional operations of dividing matrix. But if the matrix is big enough ( I don't know exactly how to determine this boundary ), the experiments show when n > 500, the blocking algorithm works.
+
+- Apply simd to pooling function and fused conv+relu function.
+
+  - if use simd to pooling function,  we can also use `im2col` to reshape input data, and so that we can use `_mm256_max_ps(__m256 a, __m256 b)`compare 8 floats at once. 
+
+    In `k^2` loop, we can get `8` results  ( k x k) .
+
+    ```c++
+    Data PoolingLayer::maxpool2d1(Data& input,int kernel_size, int *stride, int *padding) {
+        //__m256 _mm256_max_ps (__m256 a, __m256 b)
+        int N = input.batch;
+        int C = input.depth;
+        int k = kernel_size;
+        int outputH = computeShape(input.height,padding[0],stride[0],kernel_size);
+        int outputW = computeShape(input.width,padding[1],stride[1],kernel_size);
+        int n = outputW * outputH;
+        Data outputs = Data(N,C,outputH,outputW);
+        //float *output = new float[N*C*outputH*outputW]{0};
+        float* output = (float *)_mm_malloc(N * C * n * sizeof(float), 32);
+        fill(output,output+N*C*n,0.0);
+        for(int batch_id = 0; batch_id < N; batch_id++){
+            // do im2col to make data stored linear
+            float *tmp = im2col(input, batch_id, padding[0], padding[1],
+                                   stride[0], stride[1], kernel_size);
+            for(int c = 0;c < C;c++){
+                for( int i=0;i < k * k ; i++){
+                    for( int j=0; j < n;j+=8){
+                        __m256 inv = _mm256_loadu_ps(&tmp[(c*k*k+i)*n+j]);
+                        __m256 outv = _mm256_loadu_ps(&output[(batch_id*C*n)+c*n+j]);
+                        __m256 maxv = _mm256_max_ps(inv,outv);
+                        _mm256_storeu_ps(output+(batch_id*C*n)+c*n+j,maxv);
+                    }
+                }
+            }
+        }
+        outputs.setData(output);
+        _mm_free(output);
+        return outputs;
+    }
+    ```
+
+    
+
+  - add simd to cone_relu
+
+    ```c++
+    void gemm_relu(int M, int N, int K, float ALPHA,
+                          float *A, int lda,
+                          float *B, int ldb,
+                          float *C, int ldc) {
+        int i, j, k;
+    #pragma omp parallel for
+        for (i = 0; i < M; i++) {
+            for (k = 0; k < K; k++) {
+                .....
+            }
+            // load 8 floats at once to do x=max(0,x)
+            for (j = 0; j < N; j+=8) {
+                __m256 c8 = _mm256_load_ps(&C[i*ldc]+j);
+                c8 = _mm256_max_ps(c8, _mm256_set1_ps(0.0));
+                _mm256_storeu_ps(&C[i*ldc+j],c8);
+            }
+        }
+    }
+    ```
+
+    
+
+  
+
+  ---
+
 # Report for intel writing test
 
 Mail: wulsh26@mail2.sysu.edu.cn
