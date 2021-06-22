@@ -8,6 +8,39 @@
 using namespace std;
 
 
+Data PoolingLayer::maxpool2d1(Data& input,int kernel_size, int *stride, int *padding) {
+    //__m256 _mm256_max_ps (__m256 a, __m256 b)
+    int N = input.batch;
+    int C = input.depth;
+    int k = kernel_size;
+    int outputH = computeShape(input.height,padding[0],stride[0],kernel_size);
+    int outputW = computeShape(input.width,padding[1],stride[1],kernel_size);
+    int n = outputW * outputH;
+    Data outputs = Data(N,C,outputH,outputW);
+    //float *output = new float[N*C*outputH*outputW]{0};
+    float* output = (float *)_mm_malloc(N * C * n * sizeof(float), 32);
+    fill(output,output+N*C*n,0.0);
+    for(int batch_id = 0; batch_id < N; batch_id++){
+        // do im2col to make data stored linear
+        float *tmp = im2col(input, batch_id, padding[0], padding[1],
+                               stride[0], stride[1], kernel_size);
+        for(int c = 0;c < C;c++){
+            for( int i=0;i < k * k ; i++){
+                for( int j=0; j < n;j+=8){
+                    __m256 inv = _mm256_loadu_ps(&tmp[(c*k*k+i)*n+j]);
+                    __m256 outv = _mm256_loadu_ps(&output[(batch_id*C*n)+c*n+j]);
+                    __m256 maxv = _mm256_max_ps(inv,outv);
+                    _mm256_storeu_ps(output+(batch_id*C*n)+c*n+j,maxv);
+                }
+            }
+        }
+        //cout << output[batch_id*C*n] << endl;
+    }
+    outputs.setData(output);
+    _mm_free(output);
+    return outputs;
+}
+
 Data PoolingLayer::maxpool2d(Data& input,int kernel_size, int *stride, int *padding) {
     int N = input.batch;
     int C = input.depth;
