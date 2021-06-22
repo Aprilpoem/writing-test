@@ -254,7 +254,7 @@ Similarly, for a single core, this number is 44.8 GFLOPs.
 ### Running
 
 ```
-g++ main.cpp convolution.cpp data.cpp relu.cpp pooling.cpp -fopenmp
+g++ main.cpp convolution.cpp data.cpp relu.cpp pooling.cpp -fopenmp -mfma -mavx
 ./a.out
 ```
 
