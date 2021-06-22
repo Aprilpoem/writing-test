@@ -4,7 +4,9 @@
 #ifndef INTEL_TASK_POOLING_H
 #define INTEL_TASK_POOLING_H
 #include "data.h"
+#include "convolution.h"
 #include <algorithm>
+#include<immintrin.h>
 #include <omp.h>
 class PoolingLayer{
 public:
