@@ -266,7 +266,7 @@ Make sure `openMP` installed, then use this two command lines to run this simple
 
 Because this work now only inlcude forward pass part,  we can just input some test data into those functions ( conv2d, relu, pooling ) to compute performance ( flops ).  Thus, The test data temporarily don't need labels, which can be generated randomly.
 
-Assume the input data shape is $[N,C_{in},H_{in},W_{in}]$. The multi-dimentional array is a little hard to construct using c++, as arrays are physically stored in a linear, one-dimentional computer memory, I just using one-dimentional array to store data. So for input data $[N,C_{in},H_{in},W_{in}]$, the length of one-dimentional array is $N*C_{in}*H_{in}*W_{in}$. Similarly，the kernel data whose size is $[C_{out},C_{in},KH,KW]$ has length equal to $C_{out}*C_{in}*KH*KW$ . The output data has shape $[N,C_{out},H_{out},W_{out}]$, length $[N*C_{out}*H_{out}*W_{out}]$.
+Assume the input data shape is $[N,C_{in},H_{in},W_{in}]$. The multi-dimentional array is a little hard to construct using c++, as arrays are physically stored in a linear, one-dimentional computer memory, I just using one-dimentional array to store data. So for input data $[N,C_{in},H_{in},W_{in}]$, the length of one-dimentional array is $N*C_{in}*H_{in}*W_{in}$. Similarly，the kernel data whose size is $[C_{out},C_{in},KH,KW]$ has length equal $ C_{out}*C_{in}* KH * KW $. The output data has shape $[N,C_{out},H_{out},W_{out}]$, length $[N*C_{out}*H_{out}*W_{out}]$.
 
 **Data Structure **
 
