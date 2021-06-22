@@ -19,9 +19,11 @@ public:
     // copy
     Data& operator=(const Data & chunks);
     float getValue(int i, int j, int m, int n);
+    int getIndex(int i, int j, int m, int n);
     void SetValue(int i, int j, int m, int n, float  value);
     void AddValue(int i, int j, int m, int n, float value);
     void resetValue(int n,int c, int h, int w);
+    void setData(float * input);
     int getSize();
     void RandomInit();
     void Init(float fillValue = 0);
