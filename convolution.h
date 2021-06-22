@@ -1,9 +1,10 @@
 //
 // Created by wendy on 2021/6/9.
 //
-#include "data.h"
 #ifndef INTEL_TASK_CONVOLUTION_H
 #define INTEL_TASK_CONVOLUTION_H
+#include "data.h"
+
 class ConvLayer{
 public:
     int padding_h;
@@ -19,10 +20,12 @@ public:
     void InitKernel();
     Data naiveConv(Data &input);
     //Data ConvCpu(Data &input);
-    void optimizedConv(float **input, float** output,int batch,int m, int n, int k);
-    void optimizedConv1(float **input, float** output,int batch,int m, int n, int k);
+    void optimizedConv(float *input, float* output,int batch,int m, int n, int k) const;
+    void optimizedConv1(float *input,float *output,int batch,int m, int n, int k) const;
 
 };
+
+
 
 float* im2col(Data &input, int batchID, int padH, int padW, int strideH, int strideW, int ksize);
 void print(float* data, int row, int col);
