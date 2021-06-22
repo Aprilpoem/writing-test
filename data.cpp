@@ -31,6 +31,14 @@ Data &Data::operator = (const Data & chunks){
         data[i] = chunks.data[i];
     return *this;
 }
+void Data::setData(float * input){
+   int size = getSize();
+   if(data) {
+       for (int i = 0; i < size; i++) {
+           data[i] = input[i];
+       }
+   }
+}
 void Data::resetValue(int n,int c, int h, int w){
     batch = n; depth = c; height = h; width = w;
     if(data){
@@ -43,8 +51,12 @@ int Data::getSize(){
     return batch * depth * height * width;
 }
 float Data::getValue(int i, int j, int m, int n){
-    int inx = i * ( depth * width * height) + j * ( width * height) + m * height + n;
+    int inx = getIndex(i,j,m,n);
     return data[inx];
+}
+int Data::getIndex(int i, int j, int m, int n){
+    int inx = i * ( depth * width * height) + j * ( width * height) + m * height + n;
+    return inx;
 }
 void Data::SetValue(int i, int j, int m, int n,float  value){
     int inx = i * ( depth * width * height) + j * ( width * height) + m * height + n;
